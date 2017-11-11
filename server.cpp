@@ -65,17 +65,6 @@ int readline(int sockfd,char* ptr) {
     return 0;
 }
 
-int redirect(int oldfd,int newfd) {
-    int backfd = dup(oldfd);
-    dup2(newfd,oldfd);
-    return backfd;
-}
-
-void restore(int oldfd,int backfd) {
-    dup2(backfd,oldfd);
-    close(backfd);
-}
-
 int main(int argc, char* argv[], char* envp[]){
     
     struct sockaddr_in cli_addr, serv_addr;
@@ -217,19 +206,16 @@ serv_next:
                
                 pid_t pid = fork();
                 if(pid == 0) {
-                    int spec_pipe[2];
-                    pipe(spec_pipe);
+        
+                    if(dont_create_pipe) pipe(data_fd);
                     
                     if(pipe_table.find(step) != pipe_table.end()) {
                         dup2(pipe_table[step].first, 0);
                         close(pipe_table[step].second);
                     }
                     
-                    if(s == PIPE || s == END) {
-                        if(!dont_create_pipe) dup2(data_fd[1],1);
-                        else dup2(spec_pipe[1],1);
+                    if(s == PIPE || s == END) dup2(data_fd[1],1);
 
-                    }
                     else if(s == FILE) dup2(file_fd,1);
                     
                     dup2(connfd, 2);
