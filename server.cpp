@@ -12,6 +12,10 @@
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <stdio.h>
+#include <arpa/inet.h>
 
 using namespace std;
 #define MAXLINE 15000
@@ -65,26 +69,70 @@ int readline(int sockfd,char* ptr) {
     return 0;
 }
 
+char* share_msg;
+int* share_pid;
+int connfd;
+
+void read_msg(int signo){
+    write(connfd, share_msg, strlen(share_msg));
+    write(connfd, "\n", 1);
+}
+
+typedef struct data{
+    char client_id[5];
+    char name[30];
+    char ip[25];
+    char port[10];
+} client_data;
+client_data* share_data;
+
 int main(int argc, char* argv[], char* envp[]){
     
     struct sockaddr_in cli_addr, serv_addr;
-    int listenfd = TcpListen(&serv_addr, sizeof(serv_addr), atoi(argv[1]));
+    int listenfd = TcpListen(&serv_addr, sizeof(serv_addr), atoi(argv[1])),msg_shmid,data_shmid,pid_shmid;
+    key_t broadcast_msg_key = 3567, client_data_key = 4567, pid_key = 5567; //need system to decide the key
     socklen_t clilen = sizeof(cli_addr);
+
+    if((msg_shmid = shmget(broadcast_msg_key, sizeof(char[1024]) , IPC_CREAT | 0660 ) ) < 0) perror("shm");
+    if((data_shmid = shmget(client_data_key, sizeof(client_data[32]) , IPC_CREAT | 0660 ) ) < 0) perror("shm"); // care
+    if((pid_shmid = shmget(pid_key, sizeof(int[32]) , IPC_CREAT | 0660 ) ) < 0) perror("shm");
+    share_msg = (char*)shmat(msg_shmid, 0, 0);
+    share_data = (client_data*)shmat(data_shmid, 0, 0);
+    share_pid = (int*)shmat(pid_shmid, 0, 0);
+    memset(share_msg, 0, sizeof(char[1024]));
+    memset(share_pid, 0, sizeof(int[32]));
+    memset(share_data, 0, sizeof(client_data[32]));
+    share_pid[0] = getpid();
     
-    while(true) {
-        
 serv_next:
-        int step = 0, next;
+    connfd = accept(listenfd, (struct sockaddr *) &cli_addr, &clilen);
+
+    int pid = fork();
+    if(pid == 0) {
+
+        int step = 0, next, client_id;
         MyMap pipe_table;
         enum state{ PIPE , END , FILE };
-	  
-        int connfd = accept(listenfd, (struct sockaddr *) &cli_addr, &clilen);
+        for(int i = 1; i < 32; i++)
+            if(share_pid[i] == 0) {
+                client_id = i;
+                share_pid[i] = getpid();
+                break;
+            }
+
+        strcpy(share_data[client_id].name, "(no name)");
+        strcpy(share_data[client_id].ip, inet_ntoa(cli_addr.sin_addr));
+        sprintf(share_data[client_id].client_id,"%d", client_id);
+        sprintf(share_data[client_id].port,"%d", ntohs(cli_addr.sin_port));
+        
+        signal(SIGUSR1,read_msg);
+        close(listenfd);
         write(connfd,"****************************************\n** Welcome to the information server. **\n****************************************\n",123);
         setenv("PATH","bin:.", 1);
         chdir("ras");
-       
+        
         while(true) {
-                      
+        next_line:
             write(connfd,"% ",2);
             char buf[MAXLINE] = {0},response[MAXLINE] = {0};
             if(!readline(connfd, buf)) break;
@@ -95,8 +143,7 @@ serv_next:
             while(preparsing >> tok) {
 
             	if(isProgram) {
-            		count++;
-            		if(!(tok == "exit" || tok == "setenv" || tok == "printenv")) {
+            		if(!(tok == "exit" || tok == "setenv" || tok == "printenv" || tok == "yell")) {
             			string syspath(getenv("PATH"));
 	                    found_pos = 0,found = 0,test_fd = -1;
 	                    
@@ -125,6 +172,67 @@ serv_next:
                 step++, cnt++;
                 vector<string> Arglist;
                 state s = END;
+                if(tok == "yell") {
+                    char* cmd = strtok(buf," ");
+                    char* msg = strtok(NULL,"\r\n");
+                    memset(share_msg, 0, sizeof(char[1024]));
+                    sprintf(share_msg, "%s", msg);
+                    for(int i = 1; i < 50; i++) {
+                        if(share_pid[i] != 0) {
+                            kill(share_pid[i],SIGUSR1);
+                        }
+                    }
+                    break;
+                }
+                if(tok == "who") {
+                    write(connfd,"<ID>\t<nickname>\t<IP/port>\t<indicate me>\n",40);
+                    for(int i = 1; i < 32; i++) {
+                        if(share_data[i].name[0] != 0) { ///
+                            sprintf(buf,"%s\t%s\t%s\t%s",share_data[i].client_id,share_data[i].name,share_data[i].ip,share_data[i].port);
+                            write(connfd, buf, strlen(buf));
+                            if(i == client_id) write(connfd, "\t<-me\n",6);
+                            else write(connfd, "\n", 1);
+                        }
+                    }
+                    break;
+                }
+                if(tok == "tell") {
+                    char* cmd = strtok(buf," ");
+                    char* id = strtok(NULL," ");
+                    char* msg = strtok(NULL,"\r\n");
+                
+                    memset(share_msg, 0, sizeof(char[1024]));
+                    if(share_pid[atoi(id)] != 0) {
+                        sprintf(share_msg, "*** %s told you ***: %s",share_data[client_id].name,msg);
+                        kill(share_pid[atoi(id)],SIGUSR1);
+                    }
+                    else {
+                        sprintf(share_msg, "*** Error: user %s does not exist yet. ***\n", id);
+                        write(connfd, share_msg, strlen(share_msg));
+                    }
+                    break;
+                }
+                if(tok == "name") { 
+                    char* cmd = strtok(buf," ");
+                    char* Name = strtok(NULL,"\r\n");
+                    for(int i = 1; i < 32; i++) {
+                        if(share_data[i].name[0] != 0) {
+                            if(strcmp(share_data[i].name, Name) == 0) {
+                                sprintf(share_msg, "*** User '%s' already exists. ***\n", Name);
+                                write(connfd, share_msg, strlen(share_msg));
+                                goto next_line;
+                            }
+                        }
+                    }
+                    strcpy(share_data[client_id].name, Name);
+                    sprintf(share_msg,"*** User from %s/%s is named '%s'. ***",share_data[client_id].ip,share_data[client_id].port,share_data[client_id].name);
+                    for(int i = 1; i < 32; i++) {
+                        if(share_data[i].name[0] != 0 && i != client_id) {
+                            kill(share_pid[i], SIGUSR1);
+                        }
+                    }
+                    break;
+                }
               
                 do {
                     if(tok[0] == '|') {
@@ -156,12 +264,13 @@ serv_next:
                     arglist[i] = Arglist[i].c_str();
                 }
                 arglist[i] = NULL;
-
     
                 if(Arglist[0] == "exit") {
-                    close(connfd);
-        	    	goto serv_next;            
-                }
+                    share_pid[client_id] = 0; // not only share_pid...
+                    memset(&share_data[client_id*1000],0,1000);
+                    exit(0);
+                }         
+
                 if(Arglist[0] == "setenv") {
                     if(arglist[2] != NULL) setenv(arglist[1],arglist[2], 1);
                     break;
@@ -246,7 +355,6 @@ serv_next:
                             write(connfd, data_buf, n);
                             memset(data_buf, 0, sizeof(data_buf));
                         }
-                        //endofpipe(back_step,step,number_pipe);
                     }
                     
                     if(s == END) close(data_fd[0]);
@@ -257,7 +365,15 @@ serv_next:
                     //cout << "The exit code of " << Arglist[0] << " is " << WEXITSTATUS(status) << endl;
                 }
             }
+
         }
     }
+    else {
+        close(connfd);
+        goto serv_next;
+    }
+    shmctl(pid_key , IPC_RMID , NULL);
+    shmctl(client_data_key , IPC_RMID , NULL);
+    shmctl(broadcast_msg_key , IPC_RMID , NULL);
 }
 
