@@ -1,46 +1,4 @@
-#include <iostream>
-#include <sstream>
-#include <vector>
-#include <sys/wait.h>
-#include <unistd.h>
-#include <cstdlib>
-#include <errno.h>
-#include <string.h>
-#include <map>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
-#include <stdio.h>
-#include <arpa/inet.h>
-
-using namespace std;
-#define MAXLINE 15000
-#define MAXCONN 1000
-
-class MyMap: public map<int,pair<int,int > > {
-public:
-	void remove_pipe(int pos) {
-		map<int, pair<int,int> >::iterator it;
-	    if((it = find(pos)) != end()){
-	    	close(it->second.first);
-	    	close(it->second.second);
-	        erase(it);
-	    }
-	}
-	~MyMap() {
-		map<int, pair<int,int> >::iterator it = begin();
-	    while(it != end()){
-	    	close(it->second.first);
-	    	close(it->second.second);
-	        ++it;
-	    }
-	    erase(begin(),end());
-	}
-};
+#include "config.h"
 
 int TcpListen(struct sockaddr_in* servaddr,socklen_t servlen,int port){
     int listenfd,reuse = 1;
@@ -53,7 +11,7 @@ int TcpListen(struct sockaddr_in* servaddr,socklen_t servlen,int port){
     setsockopt(listenfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
     
     if(bind(listenfd, (struct sockaddr*) servaddr, servlen) < 0) cout << "bind error" << endl;
-    if(listen(listenfd, MAXCONN) < 0) cout << "listen error" << endl;/*server listen port*/
+    if(listen(listenfd, MAXCONN) < 0) cout << "listen error" << endl; /*server listen port*/
     return listenfd;
 }
 
@@ -69,192 +27,232 @@ int readline(int sockfd,char* ptr) {
     return 0;
 }
 
+typedef struct data {
+    int pid;
+    char name[30];
+    char ip[20];
+    int port;
+    int shmid;
+    char* mybuffer;
+    int from[MAXNUM];
+} client_data;
+
+client_data* share_data;
 char* share_msg;
-int* share_pid;
 int connfd;
 
 void read_msg(int signo){
     write(connfd, share_msg, strlen(share_msg));
-    write(connfd, "\n", 1);
 }
 
-typedef struct data{
-    char client_id[5];
-    char name[30];
-    char ip[25];
-    char port[10];
-} client_data;
-client_data* share_data;
+void removezombie(int signo){
+    union wait status;
+    while (wait3(&status, WNOHANG,(struct rusage *)0)>= 0) ;
+}
+
+void broadcast(void) {
+    for(int id = 1; id < MAXCLI; id++) 
+        if(share_data[id].pid) kill(share_data[id].pid, SIGUSR1);
+}
 
 int main(int argc, char* argv[], char* envp[]){
     
     struct sockaddr_in cli_addr, serv_addr;
-    int listenfd = TcpListen(&serv_addr, sizeof(serv_addr), atoi(argv[1])),msg_shmid,data_shmid,pid_shmid;
-    key_t broadcast_msg_key = 3567, client_data_key = 4567, pid_key = 5567; //need system to decide the key
+    if(argv[1] == NULL) return 0;
+    int listenfd = TcpListen(&serv_addr, sizeof(serv_addr), atoi(argv[1])), msg_shmid, data_shmid;
     socklen_t clilen = sizeof(cli_addr);
 
-    if((msg_shmid = shmget(broadcast_msg_key, sizeof(char[1024]) , IPC_CREAT | 0660 ) ) < 0) perror("shm");
-    if((data_shmid = shmget(client_data_key, sizeof(client_data[32]) , IPC_CREAT | 0660 ) ) < 0) perror("shm"); // care
-    if((pid_shmid = shmget(pid_key, sizeof(int[32]) , IPC_CREAT | 0660 ) ) < 0) perror("shm");
-    share_msg = (char*)shmat(msg_shmid, 0, 0);
-    share_data = (client_data*)shmat(data_shmid, 0, 0);
-    share_pid = (int*)shmat(pid_shmid, 0, 0);
-    memset(share_msg, 0, sizeof(char[1024]));
-    memset(share_pid, 0, sizeof(int[32]));
-    memset(share_data, 0, sizeof(client_data[32]));
-    share_pid[0] = getpid();
-    
+    if((msg_shmid = shmget(IPC_PRIVATE, MAXBUF , IPC_CREAT | 0600 ) ) < 0) perror("shm");
+    if((data_shmid = shmget(IPC_PRIVATE, sizeof(client_data[MAXCLI]) , IPC_CREAT | 0600 ) ) < 0) perror("shm"); // care
+    share_msg = (char*) shmat(msg_shmid, 0, 0);
+    share_data = (client_data*) shmat(data_shmid, 0, 0);
+
+    memset(share_msg, 0, MAXBUF);
+    memset(share_data, 0, sizeof(client_data[MAXCLI]));
+    for(int id = 1; id < MAXCLI; id++) { ///
+        share_data[id].shmid = shmget(IPC_PRIVATE, MAXBUF*MAXNUM, IPC_CREAT | 0600 );
+        share_data[id].mybuffer = (char*) shmat(share_data[id].shmid, 0, 0);
+        memset(share_data[id].mybuffer, 0, MAXBUF*MAXNUM);
+    }
+    share_data[0].pid = getpid();
+    signal(SIGCHLD, removezombie);
+
 serv_next:
     connfd = accept(listenfd, (struct sockaddr *) &cli_addr, &clilen);
+    write(connfd,"****************************************\n** Welcome to the information server. **\n****************************************\n",123);
+    setenv("PATH","bin:.", 1);
+    chdir("ras");
 
     int pid = fork();
     if(pid == 0) {
 
         int step = 0, next, client_id;
         MyMap pipe_table;
-        enum state{ PIPE , END , FILE };
-        for(int i = 1; i < 32; i++)
-            if(share_pid[i] == 0) {
-                client_id = i;
-                share_pid[i] = getpid();
+        enum state{ PIPE , END , FILE ,PIPE_OTHER };
+        for(int id = 1; id < MAXCLI; id++)
+            if(share_data[id].pid == 0) {
+                client_id = id;
+                share_data[id].pid = getpid();
+                memset(share_data[id].from, 0, sizeof(int[MAXNUM]));
+                strcpy(share_data[id].name, "(no name)");
+                strcpy(share_data[id].ip, inet_ntoa(cli_addr.sin_addr));
+                share_data[id].port = ntohs(cli_addr.sin_port); 
+                
+                signal(SIGUSR1,read_msg);
+                close(listenfd);
                 break;
             }
 
-        strcpy(share_data[client_id].name, "(no name)");
-        strcpy(share_data[client_id].ip, inet_ntoa(cli_addr.sin_addr));
-        sprintf(share_data[client_id].client_id,"%d", client_id);
-        sprintf(share_data[client_id].port,"%d", ntohs(cli_addr.sin_port));
-        
-        signal(SIGUSR1,read_msg);
-        close(listenfd);
-        write(connfd,"****************************************\n** Welcome to the information server. **\n****************************************\n",123);
-        setenv("PATH","bin:.", 1);
-        chdir("ras");
-        
-        while(true) {
-        next_line:
+        sprintf(share_msg,"*** User '%s' entered from %s/%d. ***\n",share_data[client_id].name,"CGILAB",511);
+        broadcast();
+next_line:
             write(connfd,"% ",2);
             char buf[MAXLINE] = {0},response[MAXLINE] = {0};
-            if(!readline(connfd, buf)) break;
+            if(!readline(connfd, buf)) goto next_line;
          
             string input(buf), tok;
-            int first = 1,isProgram = 1,count = 0, cnt = 0,found = 0,found_pos,test_fd;
+            int first = 1,isProgram = 1,count = 0, cnt = 0,found = 1,found_pos;
             istringstream line(input),preparsing(input);
             while(preparsing >> tok) {
 
             	if(isProgram) {
-            		if(!(tok == "exit" || tok == "setenv" || tok == "printenv" || tok == "yell")) {
+                    count++;
+            		if(!(tok == "exit" || tok == "setenv" || tok == "printenv" || tok == "yell" || tok == "name" || tok == "tell" || tok == "who")) {
             			string syspath(getenv("PATH"));
-	                    found_pos = 0,found = 0,test_fd = -1;
+                        struct stat sb;
+	                    found_pos = 0,found = 0;  
 	                    
 	                    while((found_pos = syspath.find(":")) != string::npos) {
-	                        if((test_fd = open((syspath.substr(0,found_pos)+"/"+tok).c_str(),O_RDONLY)) > 0) {
+
+	                        if(stat((syspath.substr(0,found_pos)+"/"+tok).c_str(), &sb) == 0 && sb.st_mode & S_IXUSR) {
 	                            found = 1;
 	                            break;
 	                        }
 	                        syspath = syspath.substr(found_pos+1);
 	                    }
 	                    if(!found && found_pos == string::npos) {
-	                        if((test_fd = open((syspath+"/"+tok).c_str(),O_RDONLY)) > 0) {
+	                        if(stat((syspath.substr(0,found_pos)+"/"+tok).c_str(), &sb) == 0 && sb.st_mode & S_IXUSR) {
 	                            found = 1;
 	                        }
 	                    }
 	                    if(!found) break;
-	                    close(test_fd);
-            		}            
+	                  
+            		}
+                    else found = 1;            
                 }
                 if(tok[0] == '|') isProgram = 1;
             	else isProgram = 0; 
             }
             if(found) count = -1;
             
-            while(line >> tok){
+            while(line >> tok) {
                 step++, cnt++;
-                vector<string> Arglist;
+                vector<string > Arglist;
+                vector<int > pipe_from, pipe_pos;
                 state s = END;
+                int file_fd = 0, target_id;
+
+                if(tok == "exit") {
+                    share_data[client_id].pid = 0; // not only share_pid
+                    memset(share_data[client_id].from, 0 , sizeof(int[MAXNUM]));
+                    shmctl(share_data[client_id].shmid , IPC_RMID , NULL);
+                    sprintf(share_msg,"*** User '%s' left. ***\n",share_data[client_id].name);
+                    broadcast();
+                    write(connfd, share_msg, strlen(share_msg));
+                    exit(0);
+                }
                 if(tok == "yell") {
-                    char* cmd = strtok(buf," ");
-                    char* msg = strtok(NULL,"\r\n");
-                    memset(share_msg, 0, sizeof(char[1024]));
-                    sprintf(share_msg, "%s", msg);
-                    for(int i = 1; i < 50; i++) {
-                        if(share_pid[i] != 0) {
-                            kill(share_pid[i],SIGUSR1);
-                        }
-                    }
-                    break;
+                    char* cmd = strtok(buf," "), *msg = strtok(NULL,"\r\n");
+                    sprintf(share_msg, "*** %s yelled ***: %s\n", share_data[client_id].name, msg);
+                    broadcast();
+                    goto next_line;
                 }
                 if(tok == "who") {
                     write(connfd,"<ID>\t<nickname>\t<IP/port>\t<indicate me>\n",40);
-                    for(int i = 1; i < 32; i++) {
-                        if(share_data[i].name[0] != 0) { ///
-                            sprintf(buf,"%s\t%s\t%s\t%s",share_data[i].client_id,share_data[i].name,share_data[i].ip,share_data[i].port);
+                    for(int id = 1; id < MAXCLI; id++) {
+                        if(share_data[id].pid) {
+                            if(id == client_id) sprintf(buf,"%d\t%s\t%s/%d\t<-me\n",id,share_data[id].name,"CGILAB",511);
+                            else sprintf(buf,"%d\t%s\t%s/%d\n",id,share_data[id].name,"CGILAB",511);
                             write(connfd, buf, strlen(buf));
-                            if(i == client_id) write(connfd, "\t<-me\n",6);
-                            else write(connfd, "\n", 1);
                         }
                     }
-                    break;
+                    goto next_line;
                 }
                 if(tok == "tell") {
-                    char* cmd = strtok(buf," ");
-                    char* id = strtok(NULL," ");
-                    char* msg = strtok(NULL,"\r\n");
-                
-                    memset(share_msg, 0, sizeof(char[1024]));
-                    if(share_pid[atoi(id)] != 0) {
-                        sprintf(share_msg, "*** %s told you ***: %s",share_data[client_id].name,msg);
-                        kill(share_pid[atoi(id)],SIGUSR1);
+                    char* cmd = strtok(buf," "),*number = strtok(NULL," "),*msg = strtok(NULL,"\r\n");
+                    int id = atoi(number);
+                    if(share_data[id].pid) {
+                        sprintf(share_msg, "*** %s told you ***: %s\n", share_data[client_id].name,msg);
+                        kill(share_data[id].pid,SIGUSR1);
                     }
                     else {
-                        sprintf(share_msg, "*** Error: user %s does not exist yet. ***\n", id);
-                        write(connfd, share_msg, strlen(share_msg));
+                        sprintf(share_msg, "*** Error: user #%d does not exist yet. ***\n", id);
+                        kill(share_data[client_id].pid,SIGUSR1);
                     }
-                    break;
+                    goto next_line;
                 }
                 if(tok == "name") { 
-                    char* cmd = strtok(buf," ");
-                    char* Name = strtok(NULL,"\r\n");
-                    for(int i = 1; i < 32; i++) {
-                        if(share_data[i].name[0] != 0) {
-                            if(strcmp(share_data[i].name, Name) == 0) {
-                                sprintf(share_msg, "*** User '%s' already exists. ***\n", Name);
-                                write(connfd, share_msg, strlen(share_msg));
+                    char* cmd = strtok(buf," "),*NAME = strtok(NULL,"\r\n");
+             
+                    for(int id = 1; id < MAXCLI; id++) {
+                        if(share_data[id].pid) {
+                            if(strcmp(share_data[id].name, NAME) == 0) {
+                                sprintf(share_msg, "*** User '%s' already exists. ***\n", NAME);
+                                kill(share_data[client_id].pid,SIGUSR1);
                                 goto next_line;
                             }
                         }
                     }
-                    strcpy(share_data[client_id].name, Name);
-                    sprintf(share_msg,"*** User from %s/%s is named '%s'. ***",share_data[client_id].ip,share_data[client_id].port,share_data[client_id].name);
-                    for(int i = 1; i < 32; i++) {
-                        if(share_data[i].name[0] != 0 && i != client_id) {
-                            kill(share_pid[i], SIGUSR1);
-                        }
-                    }
-                    break;
+                    strcpy(share_data[client_id].name, NAME);
+                    sprintf(share_msg,"*** User from %s/%d is named '%s'. ***\n","CGILAB",511,share_data[client_id].name);
+                    broadcast();
+                    goto next_line;
                 }
               
                 do {
                     if(tok[0] == '|') {
                         
-                        if(tok.size() != 1) {
-                            next = atoi(tok.substr(1,tok.size()-1).c_str());
-                        }
+                        if(tok.size() != 1) 
+                            next = atoi(tok.substr(1).c_str());
                         else 
                         	next = 1;
                         
                         s = PIPE;
                         break;
                     }
-                    if(tok[0] != '>') {
-                        if(s == FILE) {
-                            break;
-                        }
-                        Arglist.push_back(tok);
+                    if(tok[0] != '>' && tok[0] != '<') { 
+                        if(s == FILE) file_fd = open(tok.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0666);
+                        else Arglist.push_back(tok);
                     }
-                    else s = FILE;
-                }
-                while(line >> tok);
+                    else {
+                        if(tok == ">") s = FILE;
+                        else if(tok[0] == '<') {
+                            int read_from = atoi(tok.substr(1).c_str()), msg_pos;
+                            
+                            for(msg_pos = 0; msg_pos != MAXNUM; msg_pos++) {
+                                if(share_data[client_id].from[msg_pos] == read_from) {
+                                    pipe_pos.push_back(msg_pos);
+                                    break;
+                                }
+                            }
+                            if(msg_pos == MAXNUM) {
+                                sprintf(share_msg, "*** Error: the pipe #%d->#%d does not exist yet. ***\n", read_from, client_id);
+                                kill(share_data[client_id].pid, SIGUSR1);
+                                goto next_line; // cat <2
+                            }
+                            else {
+                                char* cmd = strtok(buf, "\r\n");
+                                sprintf(share_msg, "*** %s (#%d) just received from %s (#%d) by '%s' ***\n",share_data[client_id].name, client_id, share_data[read_from].name, read_from, cmd);
+                                broadcast();
+                            }
+                
+                        }
+                        else  {
+                            s = PIPE_OTHER;
+                            target_id = atoi(tok.substr(1).c_str());
+                        }
+                    }
+                }while(line >> tok);
 
                 if(Arglist.empty()) continue;
 
@@ -263,25 +261,20 @@ serv_next:
                 for(i = 0 ; i < Arglist.size(); i++) {
                     arglist[i] = Arglist[i].c_str();
                 }
-                arglist[i] = NULL;
-    
-                if(Arglist[0] == "exit") {
-                    share_pid[client_id] = 0; // not only share_pid...
-                    memset(&share_data[client_id*1000],0,1000);
-                    exit(0);
-                }         
+                arglist[i] = NULL;      
 
                 if(Arglist[0] == "setenv") {
                     if(arglist[2] != NULL) setenv(arglist[1],arglist[2], 1);
-                    break;
+                    goto next_line;
                 }
                 if(Arglist[0] != "printenv") {
+                    cout << cnt << " " << count << endl;
                 	if(cnt == count) {
                         string str("Unknown command: [" + Arglist[0] + "].\n");
-                        memcpy(response, str.c_str(), str.size());
-                        write(connfd, response, str.size());
+                        strcpy(response, str.c_str());
+                        write(connfd, response, strlen(response));
                         if(!first) step--;
-	                    break;
+	                    goto next_line;
 	                }
                 }
                 
@@ -291,10 +284,19 @@ serv_next:
                 if(tok == "|" && count == cnt + 1) dont_create_pipe = 1;
                 
                 //read arg//
-                int file_fd,data_fd[2];
+                int data_fd[2];
                 char data_buf[MAXLINE] = {0};
 
-                if(s == PIPE){
+                while(!pipe_pos.empty()) {
+                    if(pipe_table.find(step) == pipe_table.end()) {
+                        pipe(data_fd);
+                        pipe_table[step] = pair<int,int>(data_fd[0],data_fd[1]);
+                    } 
+                    write(pipe_table[step].second, share_data[client_id].mybuffer+pipe_pos.back()*MAXBUF, strlen(share_data[client_id].mybuffer+pipe_pos.back()*MAXBUF));
+                    share_data[client_id].from[pipe_pos.back()] = 0;
+                    pipe_pos.pop_back();
+                }
+                if(s == PIPE) {
                     if(!dont_create_pipe) {
                         if(pipe_table.find(step+next) == pipe_table.end()) {
                             pipe(data_fd);
@@ -306,10 +308,6 @@ serv_next:
                         }
                     }
                     
-                }
-                else if(s == FILE) {
-                    file_fd = open(tok.c_str(), O_RDWR | O_CREAT | O_TRUNC, 0666);
-                    if(file_fd < 0) break;
                 }
                 else pipe(data_fd);
                
@@ -323,22 +321,20 @@ serv_next:
                         close(pipe_table[step].second);
                     }
                     
-                    if(s == PIPE || s == END) dup2(data_fd[1],1);
+                    if(file_fd != 0) dup2(file_fd,1);
+                    else dup2(data_fd[1],1);
 
-                    else if(s == FILE) dup2(file_fd,1);
-                    
-                    dup2(connfd, 2);
+                    if(s == PIPE_OTHER) dup2(data_fd[1],2);
+                    else dup2(connfd, 2);
                     
                     if(Arglist[0] == "printenv") {
                         
                         char* val = getenv(arglist[1]);
                         if(arglist[2] == NULL) {
                             string str(Arglist[1] + "=" + val + "\n");
-                            memcpy(response, str.c_str(), str.size());
-                            if(val != NULL) write(connfd, response, str.size());
-                            else ;
+                            strcpy(response, str.c_str());
+                            if(val != NULL) write(connfd, response, strlen(response));
                         }
-                        else ;
                         exit(0);
                     }
                      
@@ -346,34 +342,59 @@ serv_next:
                 }
                 else {
                     pipe_table.remove_pipe(step);
-                    
-                    if(s == END) close(data_fd[1]);
+
+                    if(s == END || s == PIPE_OTHER) close(data_fd[1]);
                     if(s == FILE) close(file_fd);
-                    int n;
-                    if(s == END) { //end of pipe
-                        while((n = read(data_fd[0],data_buf,MAXLINE)) > 0) {
-                            write(connfd, data_buf, n);
-                            memset(data_buf, 0, sizeof(data_buf));
+                    int n, msg_pos;
+                    if(s == PIPE_OTHER) {
+                        if(share_data[target_id].pid) {   
+                            for(msg_pos = 0; msg_pos != MAXNUM; msg_pos++) {
+                                if (client_id == share_data[target_id].from[msg_pos]) {
+                                    sprintf(share_msg, "*** Error: the pipe #%d->#%d already exists. ***\n",client_id,target_id);
+                                    kill(share_data[client_id].pid, SIGUSR1);
+                                    goto next_line;
+                                }
+                            }
+                        }
+                        else {
+                            sprintf(share_msg, "*** Error: user #%d does not exist yet. ***\n",target_id);
+                            kill(share_data[client_id].pid, SIGUSR1);
+                            goto next_line;
                         }
                     }
                     
-                    if(s == END) close(data_fd[0]);
+                    if(s == END || s == PIPE_OTHER) { //end of pipe
+                        memset(data_buf, 0, sizeof(data_buf));
+                        n = read(data_fd[0], data_buf, MAXBUF);
+                        if(s == END) write(connfd, data_buf, n);
+                        else {
+                            for(msg_pos = 0; msg_pos != MAXNUM; msg_pos++) 
+                                if(share_data[target_id].from[msg_pos] == 0) break;
+                            memset(share_data[target_id].mybuffer+msg_pos*MAXBUF, 0, MAXBUF);
+                            memcpy(share_data[target_id].mybuffer+msg_pos*MAXBUF, data_buf, n);      
+                        }
+                    }
+                    
+                    if(s == END || s == PIPE_OTHER) close(data_fd[0]);
+                    if(s == PIPE_OTHER) {
+                        share_data[target_id].from[msg_pos] = client_id;
+                        char* cmd = strtok(buf, "\r\n");
+                        sprintf(share_msg, "*** %s (#%d) just piped '%s' to %s (#%d) ***\n",share_data[client_id].name,client_id,cmd,share_data[target_id].name,target_id);
+                        broadcast();
+                    }
                     
                     int status = -1;
                     wait(&status);
-                    if(WEXITSTATUS(status) > 0) break;
-                    //cout << "The exit code of " << Arglist[0] << " is " << WEXITSTATUS(status) << endl;
+                    cout << "The exit code of " << Arglist[0] << " is " << WEXITSTATUS(status) << endl;
                 }
             }
-
-        }
+            goto next_line;
     }
     else {
         close(connfd);
         goto serv_next;
     }
-    shmctl(pid_key , IPC_RMID , NULL);
-    shmctl(client_data_key , IPC_RMID , NULL);
-    shmctl(broadcast_msg_key , IPC_RMID , NULL);
+    shmctl(msg_shmid , IPC_RMID , NULL);
+    shmctl(data_shmid , IPC_RMID , NULL);
 }
 
