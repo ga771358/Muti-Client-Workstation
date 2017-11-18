@@ -232,6 +232,14 @@ while(true){
                     break;
                 }
                 int error = 0;
+                
+                if(cnt == count) {
+                    string str("Unknown command: [" + Arglist[0] + "].\n");
+                    strcpy(response, str.c_str());
+                    write(connfd, response, strlen(response));
+                    if(!first) step--;
+                    break;
+                }
                 do {
                     if(tok[0] == '|') {
                         
@@ -289,16 +297,6 @@ while(true){
                 if(Arglist[0] == "setenv") {
                     if(arglist[2] != NULL) setenv(arglist[1],arglist[2], 1);
                     break;
-                }
-                if(Arglist[0] != "printenv") {
-                    cout << cnt << " " << count << endl;
-                	if(cnt == count) {
-                        string str("Unknown command: [" + Arglist[0] + "].\n");
-                        strcpy(response, str.c_str());
-                        write(connfd, response, strlen(response));
-                        if(!first) step--;
-	                    break;
-	                }
                 }
                 
                 first = 0;
@@ -388,18 +386,30 @@ while(true){
                         }
                     }
                     
+                    int status = -1;
+                    wait(&status);
+                    cout << "The exit code of " << Arglist[0] << " is " << status << endl;
+
                     if(s == END || s == PIPE_OTHER) { //end of pipe
                         memset(data_buf, 0, sizeof(data_buf));
                         n = read(data_fd[0], data_buf, MAXBUF);
                         if(s == END) write(connfd, data_buf, n);
                         else {
-                            for(msg_pos = 0; msg_pos != MAXNUM; msg_pos++) 
-                                if(share_data[target_id].from[msg_pos] == 0) break;
-                            memset(share_data[target_id].mybuffer+msg_pos*MAXBUF, 0, MAXBUF);
-                            memset(response, 0, MAXBUF);
-                            read(err_fd[0], response , MAXBUF);
-                            strcat(response, data_buf);
-                            memcpy(share_data[target_id].mybuffer+msg_pos*MAXBUF, response, strlen(response));      
+                            if(status == 0) {
+                                for(msg_pos = 0; msg_pos != MAXNUM; msg_pos++) 
+                                    if(share_data[target_id].from[msg_pos] == 0) break;
+                                memset(share_data[target_id].mybuffer+msg_pos*MAXBUF, 0, MAXBUF);
+                                memset(response, 0, MAXBUF);
+                                read(err_fd[0], response , MAXBUF);
+                                strcat(response, data_buf);
+                                memcpy(share_data[target_id].mybuffer+msg_pos*MAXBUF, response, strlen(response));
+                            }
+                            else {
+                                memset(response, 0, MAXBUF);
+                                read(err_fd[0], response , MAXBUF);
+                                write(connfd, response, strlen(response));
+                                error = 1;
+                            }
                         }
                     }
                     
@@ -413,9 +423,6 @@ while(true){
                         broadcast(client_id);
                     }
                     
-                    int status = -1;
-                    wait(&status);
-                    //cout << "The exit code of " << Arglist[0] << " is " << WEXITSTATUS(status) << endl;
                 }
                 delete[]arglist;
             }
