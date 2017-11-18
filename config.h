@@ -16,6 +16,7 @@
 #include <sys/shm.h>
 #include <stdio.h>
 #include <arpa/inet.h>
+#include <signal.h>
 
 using namespace std;
 #define MAXLINE 15000
