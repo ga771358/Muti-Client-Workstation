@@ -1,5 +1,6 @@
 all: server 
 
-server: server.cpp config.h
-	g++ -g server.cpp -o ../server
+server: select.cpp server.cpp config.h
+	g++ server.cpp -o ../server
+	g++ select.cpp -o ../select
 

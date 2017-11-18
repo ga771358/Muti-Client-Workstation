@@ -43,5 +43,6 @@ public:
 	        ++it;
 	    }
 	    erase(begin(),end());
+	    cout << "remove pipe_table!" << endl;
 	}
 };
