@@ -128,6 +128,7 @@ while(true){
 
         sprintf(share_msg,"*** User '%s' entered from %s/%d. ***\n",share_data[client_id].name,"CGILAB",511);
         broadcast(client_id);
+        usleep(500000); //0.5 sec
     while(true) {
             write(connfd,"% ",2);
             char buf[MAXLINE] = {0},response[MAXLINE] = {0};
@@ -171,7 +172,7 @@ while(true){
             while(line >> tok) {
                 step++, cnt++;
                 vector<string > Arglist;
-                vector<int >  pipe_pos;
+                vector<int >  pipe_pos,wait_to_print;
                 state s = END;
                 int next, file_fd = 0, target_id;
 
@@ -187,6 +188,7 @@ while(true){
                     char* cmd = strtok(buf," "), *msg = strtok(NULL,"\r\n");
                     sprintf(share_msg, "*** %s yelled ***: %s\n", share_data[client_id].name, msg);
                     broadcast(client_id);
+                    usleep(500000); //0.5 secsss
                     break;
                 }
                 if(tok == "who") {
@@ -229,10 +231,12 @@ while(true){
                     strcpy(share_data[client_id].name, NAME);
                     sprintf(share_msg,"*** User from %s/%d is named '%s'. ***\n","CGILAB",511,share_data[client_id].name);
                     broadcast(client_id);
+                    usleep(500000); //0.5 sec
                     break;
                 }
                 int error = 0;
-                
+
+                Arglist.push_back(tok);
                 if(cnt == count) {
                     string str("Unknown command: [" + Arglist[0] + "].\n");
                     strcpy(response, str.c_str());
@@ -240,7 +244,7 @@ while(true){
                     if(!first) step--;
                     break;
                 }
-                do {
+                while(line >> tok) {
                     if(tok[0] == '|') {
                         
                         if(tok.size() != 1) next = atoi(tok.substr(1).c_str());
@@ -270,20 +274,25 @@ while(true){
                                 error = 1;
                                 break;
                             }
-                            else {
-                                char* cmd = strtok(buf, "\r\n");
-                                sprintf(share_msg, "*** %s (#%d) just received from %s (#%d) by '%s' ***\n",share_data[client_id].name, client_id, share_data[read_from].name, read_from, cmd);
-                                broadcast(client_id);
-                            }
-                
+                            else 
+                                wait_to_print.push_back(read_from);
+                            
                         }
                         else  {
                             s = PIPE_OTHER;
                             target_id = atoi(tok.substr(1).c_str());
                         }
                     }
-                }while(line >> tok);
+                }
                 if(error) break;
+
+                for(vector<int>::iterator it = wait_to_print.begin(); it != wait_to_print.end(); it++) {
+                    char* cmd = strtok(buf, "\r\n");
+                    int read_from = *it;
+                    sprintf(share_msg, "*** %s (#%d) just received from %s (#%d) by '%s' ***\n",share_data[client_id].name, client_id, share_data[read_from].name, read_from, cmd);
+                    broadcast(client_id);
+                    usleep(500000); //0.5 sec
+                }
 
                 if(Arglist.empty()) continue;
 
@@ -421,6 +430,7 @@ while(true){
                         char* cmd = strtok(buf, "\r\n");
                         sprintf(share_msg, "*** %s (#%d) just piped '%s' to %s (#%d) ***\n",share_data[client_id].name,client_id,cmd,share_data[target_id].name,target_id);
                         broadcast(client_id);
+                        usleep(500000); //0.5 sec
                     }
                     
                 }

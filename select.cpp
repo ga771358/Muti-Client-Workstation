@@ -96,6 +96,7 @@ while(true){
                 strcpy(share_data[id].path, "bin:.");
                 FD_SET(connfd, &interest);
                 if(connfd > maxfd) maxfd = connfd;
+                cout << "maxfd:" << maxfd << endl;
                 break;
             }
         }
@@ -156,7 +157,7 @@ while(true){
             while(line >> tok) {
                 share_data[client_id].step++, cnt++;
                 vector<string > Arglist;
-                vector<int >  pipe_pos;
+                vector<int >  pipe_pos, wait_to_print;
                 state s = END;
                 int step = share_data[client_id].step, next, file_fd = 0, target_id;
 
@@ -220,6 +221,7 @@ while(true){
                 }
                 int error = 0;
 
+                Arglist.push_back(tok);
                 if(cnt == count) {
                     string str("Unknown command: [" + Arglist[0] + "].\n");
                     strcpy(response, str.c_str());
@@ -227,7 +229,7 @@ while(true){
                     if(!first) step--;
                     break;
                 }
-                do {
+                while(line >> tok) {
                     if(tok[0] == '|') {
                         
                         if(tok.size() != 1) next = atoi(tok.substr(1).c_str());
@@ -257,20 +259,24 @@ while(true){
                                 error = 1;
                                 break;
                             }
-                            else {
-                                char* cmd = strtok(buf, "\r\n");
-                                sprintf(share_msg, "*** %s (#%d) just received from %s (#%d) by '%s' ***\n",share_data[client_id].name, client_id, share_data[read_from].name, read_from, cmd);
-                                broadcast(client_id);
-                            }
-                
+                            else 
+                                wait_to_print.push_back(read_from);
+                            
                         }
                         else  {
                             s = PIPE_OTHER;
                             target_id = atoi(tok.substr(1).c_str());
                         }
                     }
-                } while(line >> tok);
+                }
                 if(error) break;
+
+                for(vector<int>::iterator it = wait_to_print.begin(); it != wait_to_print.end(); it++) {
+                    char* cmd = strtok(buf, "\r\n");
+                    int read_from = *it;
+                    sprintf(share_msg, "*** %s (#%d) just received from %s (#%d) by '%s' ***\n",share_data[client_id].name, client_id, share_data[read_from].name, read_from, cmd);
+                    broadcast(client_id);
+                }
 
                 if(Arglist.empty()) continue;
 
@@ -305,10 +311,12 @@ while(true){
                 if(s == PIPE) {
                     if(!dont_create_pipe) {
                         if(pipe_table.find(step+next) == pipe_table.end()) {
+                            cout << "create new pipe" << endl;
                             pipe(data_fd);
                             pipe_table[step+next] = pair<int,int>(data_fd[0],data_fd[1]);
                         }
                         else {
+                            cout << "reused pipe" << endl;
                             data_fd[0] = pipe_table[step+next].first;
                             data_fd[1] = pipe_table[step+next].second;
                         }
