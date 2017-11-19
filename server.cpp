@@ -33,39 +33,53 @@ typedef struct data {
     char ip[20];
     int port;
     int pri_id;
+    int cast_id;
     int shmid;
     char* mybuffer;
     char* private_buffer;
+    char* cast_buffer;
+    int yell_canwrite;
+    int tell_canwrite;
     int from[MAXNUM];
 } client_data;
 
 client_data* share_data;
-char* share_msg;
+char message[MAXBUF];
 
-int connfd, client_id, msg_shmid, data_shmid, brd_shmid, pri_shmid;
+int connfd, client_id, data_shmid;
 
 void yell_action(int signo) {
-    write(connfd, share_msg, strlen(share_msg));
+    write(connfd, share_data[client_id].cast_buffer, strlen(share_data[client_id].cast_buffer));
+    share_data[client_id].yell_canwrite = 1;
 }
+
 void tell_action(int signo) {
     write(connfd, share_data[client_id].private_buffer, strlen(share_data[client_id].private_buffer));
+    share_data[client_id].tell_canwrite = 1;
 }
 
 void removezombie(int signo){    
     while ( waitpid(-1 , NULL, WNOHANG) > 0 ) cout << "remove zombie!" << endl;
 }
-void broadcast(int client_id) {
-    for(int id = 1; id < MAXCLI; id++) 
+void broadcast(char* message) {
+    for(int id = 1; id < MAXCLI; id++) {
         if(share_data[id].pid) {
-            kill(share_data[id].pid, SIGUSR1);
+            while(!share_data[id].yell_canwrite);
+            strcpy(share_data[id].cast_buffer, message);
+            share_data[id].yell_canwrite = 0;
         }
+    }
+    for(int id = 1; id < MAXCLI; id++) 
+        if(share_data[id].pid) 
+            kill(share_data[id].pid, SIGUSR1);
+        
 }
 void dealloc(int signo){
     for(int id = 1; id < MAXCLI; id++) {
         shmctl(share_data[id].shmid, IPC_RMID, NULL);
         shmctl(share_data[id].pri_id, IPC_RMID, NULL);
+        shmctl(share_data[id].cast_id, IPC_RMID, NULL);
     }
-    shmctl(msg_shmid, IPC_RMID, NULL);
     shmctl(data_shmid, IPC_RMID, NULL);
     exit(0);
 }
@@ -78,20 +92,19 @@ int main(int argc, char* argv[], char* envp[]){
     socklen_t clilen = sizeof(cli_addr);
 
     if((data_shmid = shmget(IPC_PRIVATE, sizeof(client_data[MAXCLI]) , IPC_CREAT | 0600 ) ) < 0) perror("shm"); // care
-    if((msg_shmid = shmget(IPC_PRIVATE, MAXBUF , IPC_CREAT | 0600 ) ) < 0) perror("shm"); // care
-
-    share_msg = (char*) shmat(msg_shmid, 0, 0);
     share_data = (client_data*) shmat(data_shmid, 0, 0);
-    memset(share_msg, 0, MAXBUF);
     memset(share_data, 0, sizeof(client_data[MAXCLI]));
 
     for(int id = 1; id < MAXCLI; id++) {
         share_data[id].shmid = shmget(IPC_PRIVATE, MAXBUF*MAXNUM, IPC_CREAT | 0600 );
         share_data[id].pri_id = shmget(IPC_PRIVATE, MAXBUF, IPC_CREAT | 0600 );
+        share_data[id].cast_id = shmget(IPC_PRIVATE, MAXBUF, IPC_CREAT | 0600 );
         share_data[id].mybuffer = (char*) shmat(share_data[id].shmid, 0, 0);
         share_data[id].private_buffer = (char*) shmat(share_data[id].pri_id, 0, 0);
+        share_data[id].cast_buffer = (char*) shmat(share_data[id].cast_id, 0, 0);
         memset(share_data[id].mybuffer, 0, MAXBUF*MAXNUM);
         memset(share_data[id].private_buffer, 0, MAXBUF);
+        memset(share_data[id].cast_buffer, 0, MAXBUF);
     }
     share_data[0].pid = getpid();
     signal(SIGCHLD, removezombie);
@@ -119,14 +132,15 @@ while(true){
                 strcpy(share_data[id].name, "(no name)");
                 strcpy(share_data[id].ip, inet_ntoa(cli_addr.sin_addr));
                 share_data[id].port = ntohs(cli_addr.sin_port); 
-                
+                share_data[id].yell_canwrite = 1;
+                share_data[id].tell_canwrite = 1;
                 close(listenfd);
                 break;
             }
 
-        sprintf(share_msg,"*** User '%s' entered from %s/%d. ***\n",share_data[client_id].name,"CGILAB",511);
-        broadcast(client_id);
-        //usleep(500000); //0.5 sec
+        sprintf(message,"*** User '%s' entered from %s/%d. ***\n",share_data[client_id].name,"CGILAB",511);
+        broadcast(message);
+       
     while(true) {
             write(connfd,"% ",2);
             char buf[MAXLINE] = {0},response[MAXLINE] = {0};
@@ -177,16 +191,15 @@ while(true){
                 if(tok == "exit") {
                     share_data[client_id].pid = 0; // not only share_pid
                     memset(share_data[client_id].from, 0 , sizeof(int[MAXNUM]));
-                    sprintf(share_msg,"*** User '%s' left. ***\n",share_data[client_id].name);
-                    broadcast(client_id);
-                    write(connfd, share_msg, strlen(share_msg));
+                    sprintf(message,"*** User '%s' left. ***\n",share_data[client_id].name);
+                    broadcast(message);
+                    write(connfd, message, strlen(message));
                     exit(0);
                 }
                 if(tok == "yell") {
                     char* cmd = strtok(buf," "), *msg = strtok(NULL,"\r\n");
-                    sprintf(share_msg, "*** %s yelled ***: %s\n", share_data[client_id].name, msg);
-                    broadcast(client_id);
-                    usleep(500000); //0.5 secsss
+                    sprintf(message, "*** %s yelled ***: %s\n", share_data[client_id].name, msg);
+                    broadcast(message);
                     break;
                 }
                 if(tok == "who") {
@@ -204,7 +217,9 @@ while(true){
                     char* cmd = strtok(buf," "),*number = strtok(NULL," "),*msg = strtok(NULL,"\r\n");
                     int id = atoi(number);
                     if(share_data[id].pid) {
+                        while(!share_data[id].tell_canwrite);
                         sprintf(share_data[id].private_buffer, "*** %s told you ***: %s\n", share_data[client_id].name,msg);
+                        share_data[id].tell_canwrite = 0;
                         kill(share_data[id].pid,SIGUSR2);
                     }
                     else {
@@ -227,9 +242,8 @@ while(true){
                     }
                     if(id < MAXCLI) break;
                     strcpy(share_data[client_id].name, NAME);
-                    sprintf(share_msg,"*** User from %s/%d is named '%s'. ***\n","CGILAB",511,share_data[client_id].name);
-                    broadcast(client_id);
-                    usleep(500000); //0.5 sec
+                    sprintf(message,"*** User from %s/%d is named '%s'. ***\n","CGILAB",511,share_data[client_id].name);
+                    broadcast(message);
                     break;
                 }
                 int error = 0;
@@ -287,9 +301,8 @@ while(true){
                 for(vector<int>::iterator it = wait_to_print.begin(); it != wait_to_print.end(); it++) {
                     char* cmd = strtok(buf, "\r\n");
                     int read_from = *it;
-                    sprintf(share_msg, "*** %s (#%d) just received from %s (#%d) by '%s' ***\n",share_data[client_id].name, client_id, share_data[read_from].name, read_from, cmd);
-                    broadcast(client_id);
-                    usleep(500000); //0.5 sec
+                    sprintf(message, "*** %s (#%d) just received from %s (#%d) by '%s' ***\n",share_data[client_id].name, client_id, share_data[read_from].name, read_from, cmd);
+                    broadcast(message);
                 }
 
                 if(Arglist.empty()) continue;
@@ -426,9 +439,8 @@ while(true){
                         if(error) break;
                         share_data[target_id].from[msg_pos] = client_id;
                         char* cmd = strtok(buf, "\r\n");
-                        sprintf(share_msg, "*** %s (#%d) just piped '%s' to %s (#%d) ***\n",share_data[client_id].name,client_id,cmd,share_data[target_id].name,target_id);
-                        broadcast(client_id);
-                        usleep(500000); //0.5 sec
+                        sprintf(message, "*** %s (#%d) just piped '%s' to %s (#%d) ***\n",share_data[client_id].name,client_id,cmd,share_data[target_id].name,target_id);
+                        broadcast(message);
                     }
                     
                 }
