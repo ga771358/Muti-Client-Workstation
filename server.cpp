@@ -62,10 +62,8 @@ void broadcast(int client_id) {
 }
 void dealloc(int signo){
     for(int id = 1; id < MAXCLI; id++) {
-        if(share_data[id].pid) {
-            shmctl(share_data[id].shmid, IPC_RMID, NULL);
-            shmctl(share_data[id].pri_id, IPC_RMID, NULL);
-        }
+        shmctl(share_data[id].shmid, IPC_RMID, NULL);
+        shmctl(share_data[id].pri_id, IPC_RMID, NULL);
     }
     shmctl(msg_shmid, IPC_RMID, NULL);
     shmctl(data_shmid, IPC_RMID, NULL);
