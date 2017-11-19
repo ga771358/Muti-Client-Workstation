@@ -269,7 +269,10 @@ while(true){
                         }
                     }
                 }
-                if(error) break;
+                if(error) {
+                    if(file_fd != 0) close(file_fd);
+                    break;
+                }
 
                 for(vector<int>::iterator it = wait_to_print.begin(); it != wait_to_print.end(); it++) {
                     char* cmd = strtok(buf, "\r\n");
@@ -377,7 +380,6 @@ while(true){
                             sprintf(response, "*** Error: user #%d does not exist yet. ***\n",target_id);
                             write(share_data[client_id].connfd, response, strlen(response));
                             error = 1;
-                            break;
                         }
                     }
                     
@@ -385,7 +387,7 @@ while(true){
                     wait(&status);
                     cout << "The exit code of " << Arglist[0] << " is " << status << endl;
 
-                    if(s == END || s == PIPE_OTHER) { //end of pipe
+                    if(!error && (s == END || s == PIPE_OTHER)) { //end of pipe
                         memset(data_buf, 0, sizeof(data_buf));
                         n = read(data_fd[0], data_buf, MAXBUF);
                         if(s == END) write(share_data[client_id].connfd, data_buf, n);
