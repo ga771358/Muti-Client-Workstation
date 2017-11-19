@@ -360,7 +360,7 @@ while(true){
                     close(err_fd[1]);
 
                     if(s == END || s == PIPE_OTHER) close(data_fd[1]);
-                    if(s == FILE) close(file_fd);
+                    if(file_fd != 0) close(file_fd);
                     int n, msg_pos,error = 0;
                     if(s == PIPE_OTHER) {
                         if(share_data[target_id].connfd) {   

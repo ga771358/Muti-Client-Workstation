@@ -44,15 +44,15 @@ char* share_msg;
 
 int connfd, client_id, msg_shmid, data_shmid, brd_shmid, pri_shmid;
 
-void yell_action(int signo){
+void yell_action(int signo) {
     write(connfd, share_msg, strlen(share_msg));
 }
-void tell_action(int signo){
+void tell_action(int signo) {
     write(connfd, share_data[client_id].private_buffer, strlen(share_data[client_id].private_buffer));
 }
 
 void removezombie(int signo){    
-    while ( waitpid(-1 , NULL, WNOHANG) > 0 );
+    while ( waitpid(-1 , NULL, WNOHANG) > 0 ) cout << "remove zombie!" << endl;
 }
 void broadcast(int client_id) {
     for(int id = 1; id < MAXCLI; id++) 
@@ -126,7 +126,7 @@ while(true){
 
         sprintf(share_msg,"*** User '%s' entered from %s/%d. ***\n",share_data[client_id].name,"CGILAB",511);
         broadcast(client_id);
-        usleep(500000); //0.5 sec
+        //usleep(500000); //0.5 sec
     while(true) {
             write(connfd,"% ",2);
             char buf[MAXLINE] = {0},response[MAXLINE] = {0};
@@ -372,7 +372,7 @@ while(true){
                     close(err_fd[1]);
 
                     if(s == END || s == PIPE_OTHER) close(data_fd[1]);
-                    if(s == FILE) close(file_fd);
+                    if(file_fd != 0) close(file_fd);
                     int n, msg_pos,error = 0;
                     if(s == PIPE_OTHER) {
                         if(share_data[target_id].pid) {   
